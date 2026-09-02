@@ -1,0 +1,905 @@
+// ============================================================================
+// Government HRIS — PostgreSQL schema (Supabase Cloud in production).
+// Run ONLY through Prisma Migrate:  pnpm db:migrate  (never hand-edit prod DDL)
+// Money: Decimal PHP (numeric(15,2)). API maps integer centavos <-> Decimal at
+// the boundary; arithmetic stays in integer centavos inside @gov-hris/contracts.
+// All timestamps UTC. UUID PKs. Explicit delete behavior. Append-only tables
+// (AuditLog, ledgers, RawTimeLog, snapshots) have no update path in services.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL") // Supabase pooler requires direct URL for migrations
+}
+
+/* ================= enums ================= */
+enum Role { SYSTEM_ADMIN ADMINISTRATOR HR_OFFICER PAYROLL_OFFICER ACCOUNTING SUPERVISOR DEPARTMENT_HEAD EMPLOYEE HIRING_MANAGER APPLICANT }
+enum AppointmentType { PERMANENT CASUAL JOB_ORDER COS }
+enum EmployeeStatus { ACTIVE SEPARATED ON_LEAVE }
+enum AttendanceStatus { ON_TIME LATE UNDERTIME LATE_AND_UNDERTIME ABSENT ON_LEAVE HOLIDAY REST_DAY OFFICIAL_BUSINESS INCOMPLETE }
+enum AdjustmentStatus { PENDING APPROVED REJECTED }
+enum AdjustmentKind { CLOCK_IN CLOCK_OUT FULL_DAY STATUS }
+enum LeaveStatus { PENDING_SUPERVISOR PENDING_HR APPROVED REJECTED CANCELLED }
+enum LedgerType { CREDIT DEBIT ADJUSTMENT REVERSAL EXPIRY }
+enum SchemeCode { GSIS PHILHEALTH PAGIBIG WTAX }
+enum LoanStatus { DRAFT SUBMITTED UNDER_REVIEW APPROVED ACTIVE PAID REJECTED CANCELLED }
+enum LoanLedgerType { DISBURSEMENT PAYROLL_PAYMENT MANUAL_PAYMENT ADJUSTMENT REVERSAL }
+enum PayrollRunStatus { DRAFT QUEUED COMPUTING COMPUTED FOR_VERIFICATION VERIFIED FOR_APPROVAL APPROVED RELEASED FAILED CANCELLED }
+enum CandidateStatus { NEW UNDER_REVIEW SHORTLISTED INTERVIEW_SCHEDULED INTERVIEWED FOR_FINAL_REVIEW HIRED REJECTED WITHDRAWN }
+enum JobStatus { DRAFT OPEN CLOSED }
+enum ReportStatus { QUEUED PROCESSING DONE FAILED }
+enum HolidayType { REGULAR SPECIAL }
+enum NotificationType { LEAVE ATTENDANCE PAYROLL LOAN RECRUITMENT REPORT SYSTEM }
+enum TimeLogSource { BIOMETRIC MANUAL }
+
+/* ================= identity & authorization =================
+   Supabase Auth owns identity (auth.users). UserProfile mirrors the id and
+   carries app-side role assignments. Roles/permissions live in THIS database
+   and are resolved server-side — never from browser-supplied claims. */
+model UserProfile {
+  id          String    @id @db.Uuid // == supabase auth.users.id
+  email       String    @unique
+  fullName    String
+  active      Boolean   @default(true)
+  employeeId  String?   @unique
+  employee    Employee? @relation(fields: [employeeId], references: [id])
+  roles       UserRole[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Permission {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique // e.g. "payroll.release"
+  description String
+  rolePerms   RolePermission[]
+}
+
+model Role {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        Role             @unique
+  description String
+  users       UserRole[]
+  rolePerms   RolePermission[]
+}
+
+model RolePermission {
+  id           String     @id @default(uuid()) @db.Uuid
+  roleId       String     @db.Uuid
+  permissionId String     @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  @@unique([roleId, permissionId])
+}
+
+model UserRole {
+  id      String   @id @default(uuid()) @db.Uuid
+  userId  String   @db.Uuid
+  roleId  String   @db.Uuid
+  user    UserProfile @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role    Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  @@unique([userId, roleId])
+}
+
+/* ================= organization ================= */
+model Agency {
+  id      String   @id @default(uuid()) @db.Uuid
+  code    String   @unique
+  name    String
+  offices Office[]
+}
+
+model Office {
+  id          String       @id @default(uuid()) @db.Uuid
+  agencyId    String       @db.Uuid
+  code        String       @unique
+  name        String
+  agency      Agency       @relation(fields: [agencyId], references: [id], onDelete: Restrict)
+  departments Department[]
+}
+
+model Department {
+  id             String     @id @default(uuid()) @db.Uuid
+  officeId       String     @db.Uuid
+  code           String     @unique
+  name           String
+  headEmployeeId String?    @db.Uuid
+  office         Office     @relation(fields: [officeId], references: [id], onDelete: Restrict)
+  divisions      Division[]
+  positions      Position[]
+  employees      Employee[]
+  jobPostings    JobPosting[]
+}
+
+model Division {
+  id           String     @id @default(uuid()) @db.Uuid
+  departmentId String     @db.Uuid
+  code         String     @unique
+  name         String
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  sections     Section[]
+}
+
+model Section {
+  id         String   @id @default(uuid()) @db.Uuid
+  divisionId String   @db.Uuid
+  code       String   @unique
+  name       String
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Restrict)
+}
+
+model Position {
+  id           String     @id @default(uuid()) @db.Uuid
+  departmentId String     @db.Uuid
+  code         String     @unique
+  title        String
+  salaryGrade  Int
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  employees    Employee[]
+}
+
+/* ================= employees ================= */
+model Employee {
+  id              String           @id @default(uuid()) @db.Uuid
+  employeeNo      String           @unique
+  userId          String?          @unique
+  user            UserProfile?     @relation(fields: [userId], references: [id])
+  firstName       String
+  middleName      String?
+  lastName        String
+  preferredName   String?
+  email           String           @unique
+  phone           String?
+  departmentId    String           @db.Uuid
+  department      Department       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  positionId      String           @db.Uuid
+  position        Position         @relation(fields: [positionId], references: [id], onDelete: Restrict)
+  salaryGrade     Int
+  salaryStep      Int
+  scheduleId      String           @db.Uuid
+  schedule        SalarySchedule   @relation(fields: [scheduleId], references: [id], onDelete: Restrict)
+  shiftId         String           @db.Uuid
+  shift           Shift            @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  appointmentType AppointmentType  @default(PERMANENT)
+  status          EmployeeStatus   @default(ACTIVE)
+  hiredAt         DateTime         @db.Date
+  separatedAt     DateTime?        @db.Date
+  birthDate       DateTime?        @db.Date
+  gender          String           @db.Char(1)
+  address         String?
+  tin             String?
+  gsisNo          String?
+  philhealthNo    String?
+  pagibigNo       String?
+  bankName        String?
+  bankAccountEnc  String?          // encrypted at rest; plaintext never logged
+  avatarHue       Int              @default(215)
+
+  employmentRecords    EmploymentRecord[]
+  supervisorHistory    EmployeeSupervisorHistory[]
+  compensationHistory  EmployeeCompensation[]
+  scheduleAssignments  EmployeeScheduleAssignment[]
+  biometricMappings    BiometricEmployeeMapping[]
+  attendanceDays       AttendanceDay[]
+  adjustments          AttendanceAdjustment[]
+  leaveLedger          LeaveLedgerEntry[]
+  leaveRequests        LeaveRequest[]
+  payrollLines         EmployeePayroll[]
+  allowances           EmployeeAllowance[]
+  loans                EmployeeLoan[]
+  notifications        Notification[]
+  emergencyContacts    EmergencyContact[]
+
+  @@index([departmentId, status])
+  @@index([lastName, firstName])
+}
+
+model EmergencyContact {
+  id         String   @id @default(uuid()) @db.Uuid
+  employeeId String   @db.Uuid
+  name       String
+  relation   String
+  phone      String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+model EmploymentRecord {
+  id          String   @id @default(uuid()) @db.Uuid
+  employeeId  String   @db.Uuid
+  positionId  String   @db.Uuid
+  from        DateTime @db.Date
+  to          DateTime? @db.Date
+  appointment AppointmentType
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+model EmployeeSupervisorHistory {
+  id           String    @id @default(uuid()) @db.Uuid
+  employeeId   String    @db.Uuid
+  supervisorId String    @db.Uuid
+  from         DateTime  @db.Date
+  to           DateTime? @db.Date
+  employee     Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  @@index([employeeId, to])
+}
+
+model EmployeeCompensation {
+  id            String   @id @default(uuid()) @db.Uuid
+  employeeId    String   @db.Uuid
+  salaryGrade   Int
+  salaryStep    Int
+  scheduleId    String   @db.Uuid
+  monthlyRate   Decimal  @db.Decimal(15, 2)
+  effectiveFrom DateTime @db.Date
+  effectiveTo   DateTime? @db.Date
+  changedBy     String   @db.Uuid
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  @@index([employeeId, effectiveFrom])
+}
+
+/* ================= schedules & holidays ================= */
+model WorkSchedule {
+  id     String  @id @default(uuid()) @db.Uuid
+  name   String
+  shifts Shift[]
+}
+
+model Shift {
+  id           String         @id @default(uuid()) @db.Uuid
+  scheduleId   String?        @db.Uuid
+  schedule     WorkSchedule?  @relation(fields: [scheduleId], references: [id])
+  name         String
+  startMin     Int            // minutes of day
+  endMin       Int
+  graceMin     Int            @default(0)
+  lunchMin     Int            @default(60)
+  employees    Employee[]
+  assignments  EmployeeScheduleAssignment[]
+}
+
+model EmployeeScheduleAssignment {
+  id         String    @id @default(uuid()) @db.Uuid
+  employeeId String    @db.Uuid
+  shiftId    String    @db.Uuid
+  from       DateTime  @db.Date
+  to         DateTime? @db.Date
+  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shift      Shift     @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+}
+
+model Holiday {
+  id   String      @id @default(uuid()) @db.Uuid
+  date DateTime    @unique @db.Date
+  name String
+  type HolidayType
+}
+
+/* ================= attendance & biometrics =================
+   RawTimeLog is append-only evidence; corrections create
+   AttendanceAdjustment rows, never rewrites. */
+model BiometricDevice {
+  id          String           @id @default(uuid()) @db.Uuid
+  name        String
+  vendor      String
+  model       String
+  location    String
+  lastSyncAt  DateTime?
+  rawLogs     RawTimeLog[]
+  imports     BiometricImport[]
+  mappings    BiometricEmployeeMapping[]
+}
+
+model BiometricEmployeeMapping {
+  id            String          @id @default(uuid()) @db.Uuid
+  deviceId      String          @db.Uuid
+  employeeId    String          @db.Uuid
+  deviceUserId  String          // vendor-side identifier
+  device        BiometricDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  employee      Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  @@unique([deviceId, deviceUserId])
+  @@unique([deviceId, employeeId])
+}
+
+model BiometricImport {
+  id          String          @id @default(uuid()) @db.Uuid
+  deviceId    String          @db.Uuid
+  fileName    String
+  records     Int
+  duplicates  Int             @default(0)
+  importedBy  String          @db.Uuid
+  at          DateTime        @default(now())
+  device      BiometricDevice @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+}
+
+model RawTimeLog {
+  id         String          @id @default(uuid()) @db.Uuid
+  deviceId   String          @db.Uuid
+  employeeNo String
+  at         DateTime
+  source     TimeLogSource   @default(BIOMETRIC)
+  device     BiometricDevice @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  @@unique([deviceId, employeeNo, at]) // duplicate-detection at ingest
+  @@index([employeeNo, at])
+}
+
+model AttendanceDay {
+  id           String           @id @default(uuid()) @db.Uuid
+  employeeId   String           @db.Uuid
+  date         DateTime         @db.Date
+  clockIn      Int?
+  clockOut     Int?
+  totalMin     Int              @default(0)
+  lateMin      Int              @default(0)
+  undertimeMin Int              @default(0)
+  otMin        Int              @default(0)
+  status       AttendanceStatus
+  note         String?
+  finalized    Boolean          @default(false) // locked once inside a released payroll period
+  source       String           @default("DEVICE")
+  employee     Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  adjustments  AttendanceAdjustment[]
+  @@unique([employeeId, date])
+  @@index([date, status])
+}
+
+model AttendanceAdjustment {
+  id              String            @id @default(uuid()) @db.Uuid
+  attendanceId    String?           @db.Uuid
+  employeeId      String            @db.Uuid
+  date            DateTime          @db.Date
+  kind            AdjustmentKind
+  oldValue        String?
+  newValue        String?
+  reason          String
+  status          AdjustmentStatus  @default(PENDING)
+  requestedBy     String            @db.Uuid
+  decidedBy       String?           @db.Uuid
+  decidedAt       DateTime?
+  createdAt       DateTime          @default(now())
+  attendance      AttendanceDay?    @relation(fields: [attendanceId], references: [id])
+  employee        Employee          @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  @@index([status, createdAt])
+}
+
+model OvertimeRecord {
+  id          String   @id @default(uuid()) @db.Uuid
+  employeeId  String   @db.Uuid
+  date        DateTime @db.Date
+  minutes     Int
+  reason      String
+  approvedBy  String?  @db.Uuid
+  createdAt   DateTime @default(now())
+}
+
+/* ================= leave ================= */
+model LeaveType {
+  id          String              @id @default(uuid()) @db.Uuid
+  code        String              @unique
+  name        String
+  annualDays  Int
+  requiresDoc Boolean             @default(false)
+  color       String              @default("#2170E4")
+  active      Boolean             @default(true)
+  policies    LeavePolicy[]
+  ledger      LeaveLedgerEntry[]
+  requests    LeaveRequest[]
+}
+
+model LeavePolicy {
+  id            String    @id @default(uuid()) @db.Uuid
+  leaveTypeId   String    @db.Uuid
+  employeeClass String    @default("ALL") // PERMANENT / CASUAL / ALL
+  annualDays    Int
+  effectiveFrom DateTime  @db.Date
+  leaveType     LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Cascade)
+}
+
+model LeaveLedgerEntry {
+  id          String    @id @default(uuid()) @db.Uuid
+  employeeId  String    @db.Uuid
+  leaveTypeId String    @db.Uuid
+  type        LedgerType
+  daysH       Int       // hundredths of a day — integer-safe
+  refType     String?
+  refId       String?   @db.Uuid
+  memo        String
+  actorId     String
+  at          DateTime  @default(now())
+  employee    Employee  @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  leaveType   LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
+  @@index([employeeId, leaveTypeId, at])
+}
+
+model LeaveRequest {
+  id          String          @id @default(uuid()) @db.Uuid
+  employeeId  String          @db.Uuid
+  leaveTypeId String          @db.Uuid
+  startDate   DateTime        @db.Date
+  endDate     DateTime        @db.Date
+  workingDays Int
+  reason      String
+  docPath     String?         // private storage path
+  status      LeaveStatus     @default(PENDING_SUPERVISOR)
+  filedAt     DateTime        @default(now())
+  employee    Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  leaveType   LeaveType       @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
+  approvals   LeaveApproval[]
+  @@index([employeeId, status])
+  @@index([status, filedAt])
+}
+
+model LeaveApproval {
+  id        String      @id @default(uuid()) @db.Uuid
+  requestId String      @db.Uuid
+  stage     String      // SUPERVISOR | HR
+  actorId   String      @db.Uuid
+  action    String      // APPROVE | REJECT
+  note      String?
+  at        DateTime    @default(now())
+  request   LeaveRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+}
+
+/* ================= payroll ================= */
+model SalarySchedule {
+  id            String         @id @default(uuid()) @db.Uuid
+  name          String
+  effectiveFrom DateTime       @db.Date
+  note          String?
+  grades        SalaryGrade[]
+  employees     Employee[]
+}
+
+model SalaryGrade {
+  id         String         @id @default(uuid()) @db.Uuid
+  scheduleId String         @db.Uuid
+  grade      Int
+  schedule   SalarySchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  steps      SalaryStep[]
+  @@unique([scheduleId, grade])
+}
+
+model SalaryStep {
+  id        String      @id @default(uuid()) @db.Uuid
+  gradeId   String      @db.Uuid
+  step      Int
+  rate      Decimal     @db.Decimal(15, 2) // monthly, PHP
+  grade     SalaryGrade @relation(fields: [gradeId], references: [id], onDelete: Cascade)
+  @@unique([gradeId, step])
+}
+
+model PayrollPeriod {
+  id      String        @id @default(uuid()) @db.Uuid
+  label   String        @unique
+  from    DateTime      @db.Date
+  to      DateTime      @db.Date
+  cutoff  DateTime      @db.Date
+  closed  Boolean       @default(false)
+  runs    PayrollRun[]
+}
+
+model PayrollRun {
+  id              String            @id @default(uuid()) @db.Uuid
+  periodId        String            @db.Uuid
+  status          PayrollRunStatus  @default(DRAFT)
+  idempotencyKey  String            @unique // "run:<periodId>" — guarantees no duplicate runs
+  progress        Int               @default(0)
+  stage           String?
+  log             String[]
+  employeeCount   Int               @default(0)
+  gross           Decimal           @default(0) @db.Decimal(17, 2)
+  deductions      Decimal           @default(0) @db.Decimal(17, 2)
+  net             Decimal           @default(0) @db.Decimal(17, 2)
+  createdBy       String?           @db.Uuid
+  verifiedBy      String?           @db.Uuid
+  approvedBy      String?           @db.Uuid
+  releasedBy      String?           @db.Uuid
+  createdAt       DateTime          @default(now())
+  verifiedAt      DateTime?
+  approvedAt      DateTime?
+  releasedAt      DateTime?
+  error           String?
+  period          PayrollPeriod     @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  lines           EmployeePayroll[]
+  bankExports     BankExport[]
+  @@index([periodId, status])
+}
+
+model EmployeePayroll {
+  id         String     @id @default(uuid()) @db.Uuid
+  runId      String     @db.Uuid
+  employeeId String     @db.Uuid
+  // ---- immutable identity/compensation snapshot ----
+  snapshot   Json       // name, position, department, SG-step, schedule, employeeNo
+  basic      Decimal    @db.Decimal(15, 2)
+  ot         Decimal    @default(0) @db.Decimal(15, 2)
+  lateDeduct Decimal    @default(0) @db.Decimal(15, 2)
+  gross      Decimal    @db.Decimal(15, 2)
+  gsis       Decimal    @db.Decimal(15, 2)
+  philhealth Decimal    @db.Decimal(15, 2)
+  pagibig    Decimal    @db.Decimal(15, 2)
+  wtax       Decimal    @db.Decimal(15, 2)
+  loan       Decimal    @default(0) @db.Decimal(15, 2)
+  totalDeduct Decimal   @db.Decimal(15, 2)
+  net        Decimal    @db.Decimal(15, 2)
+  // resolved rule versions (historical reproducibility)
+  rulesUsed  Json
+  run        PayrollRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+  employee   Employee   @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  earnings   PayrollEarning[]
+  deductions PayrollDeduction[]
+  attendance PayrollAttendanceSnapshot?
+  payslip    Payslip?
+  @@unique([runId, employeeId])
+  @@index([employeeId])
+}
+
+model PayrollEarning {
+  id              String          @id @default(uuid()) @db.Uuid
+  employeePayrollId String        @db.Uuid
+  label           String
+  amount          Decimal         @db.Decimal(15, 2)
+  payroll         EmployeePayroll @relation(fields: [employeePayrollId], references: [id], onDelete: Restrict)
+}
+
+model PayrollDeduction {
+  id              String          @id @default(uuid()) @db.Uuid
+  employeePayrollId String        @db.Uuid
+  label           String
+  amount          Decimal         @db.Decimal(15, 2)
+  payroll         EmployeePayroll @relation(fields: [employeePayrollId], references: [id], onDelete: Restrict)
+}
+
+model PayrollAttendanceSnapshot {
+  id                String          @id @default(uuid()) @db.Uuid
+  employeePayrollId String          @unique @db.Uuid
+  present           Int
+  lateDays          Int
+  absent            Int
+  otMin             Int
+  lateMin           Int
+  utMin             Int
+  payroll           EmployeePayroll @relation(fields: [employeePayrollId], references: [id], onDelete: Restrict)
+}
+
+model Payslip {
+  id                String          @id @default(uuid()) @db.Uuid
+  number            String          @unique
+  employeePayrollId String          @unique @db.Uuid
+  releasedAt        DateTime        @default(now())
+  pdfPath           String?         // private storage
+  payroll           EmployeePayroll @relation(fields: [employeePayrollId], references: [id], onDelete: Restrict)
+}
+
+model BankExport {
+  id        String     @id @default(uuid()) @db.Uuid
+  runId     String     @db.Uuid
+  fileName  String
+  format    String     @default("CSV")
+  filePath  String     // private storage
+  createdBy String     @db.Uuid
+  createdAt DateTime   @default(now())
+  run       PayrollRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+}
+
+/* ================= government deductions =================
+   Rules are effective-dated and immutable; a payroll run stores the resolved
+   version ids in EmployeePayroll.rulesUsed so history reproduces exactly.
+   DEMO seed tables must be flagged demo=true and replaced with legally
+   verified configuration before real payroll. */
+model GovernmentContributionScheme {
+  id          String                       @id @default(uuid()) @db.Uuid
+  code        SchemeCode                   @unique
+  name        String
+  description String?
+  rules       GovernmentContributionRule[]
+}
+
+model GovernmentContributionRule {
+  id            String                       @id @default(uuid()) @db.Uuid
+  schemeId      String                       @db.Uuid
+  effectiveFrom DateTime                     @db.Date
+  employeeBps   Int?
+  employerBps   Int?
+  monthlyFloor  Decimal?                     @db.Decimal(15, 2)
+  monthlyCap    Decimal?                     @db.Decimal(15, 2)
+  note          String
+  demo          Boolean                      @default(true)
+  scheme        GovernmentContributionScheme @relation(fields: [schemeId], references: [id], onDelete: Restrict)
+  taxBrackets   TaxBracket[]
+  @@index([schemeId, effectiveFrom])
+}
+
+model TaxBracket {
+  id       String                     @id @default(uuid()) @db.Uuid
+  ruleId   String                     @db.Uuid
+  fromAmt  Decimal                    @db.Decimal(15, 2)
+  toAmt    Decimal?                   @db.Decimal(15, 2)
+  baseAmt  Decimal                    @db.Decimal(15, 2)
+  rateBps  Int
+  rule     GovernmentContributionRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  @@index([ruleId, fromAmt])
+}
+
+/* ================= allowances ================= */
+model AllowanceType {
+  id       String              @id @default(uuid()) @db.Uuid
+  code     String              @unique
+  name     String
+  monthly  Decimal             @db.Decimal(15, 2)
+  taxable  Boolean             @default(false)
+  active   Boolean             @default(true)
+  grants   EmployeeAllowance[]
+}
+
+model EmployeeAllowance {
+  id              String        @id @default(uuid()) @db.Uuid
+  employeeId      String        @db.Uuid
+  allowanceTypeId String        @db.Uuid
+  monthly         Decimal       @db.Decimal(15, 2)
+  effectiveFrom   DateTime      @db.Date
+  effectiveTo     DateTime?     @db.Date
+  active          Boolean       @default(true)
+  grantedBy       String        @db.Uuid
+  employee        Employee      @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  allowanceType   AllowanceType @relation(fields: [allowanceTypeId], references: [id], onDelete: Restrict)
+  @@unique([employeeId, allowanceTypeId, effectiveFrom])
+  @@index([employeeId, active])
+}
+
+/* ================= loans ================= */
+model LoanType {
+  id           String         @id @default(uuid()) @db.Uuid
+  code         String         @unique
+  name         String
+  maxAmount    Decimal        @db.Decimal(15, 2)
+  maxTermMonths Int
+  loans        EmployeeLoan[]
+}
+
+model EmployeeLoan {
+  id              String                @id @default(uuid()) @db.Uuid
+  refNo           String                @unique
+  employeeId      String                @db.Uuid
+  loanTypeId      String                @db.Uuid
+  appliedAmount   Decimal               @db.Decimal(15, 2)
+  approvedAmount  Decimal?              @db.Decimal(15, 2)
+  termMonths      Int
+  installment     Decimal               @db.Decimal(15, 2)
+  balance         Decimal               @db.Decimal(15, 2)
+  status          LoanStatus            @default(DRAFT)
+  appliedAt       DateTime              @default(now())
+  decidedAt       DateTime?
+  decidedBy       String?               @db.Uuid
+  employee        Employee              @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  loanType        LoanType              @relation(fields: [loanTypeId], references: [id], onDelete: Restrict)
+  ledger          LoanLedgerEntry[]
+  schedule        LoanPaymentSchedule[]
+  @@index([employeeId, status])
+}
+
+model LoanLedgerEntry {
+  id        String       @id @default(uuid()) @db.Uuid
+  loanId    String       @db.Uuid
+  type      LoanLedgerType
+  amount    Decimal      @db.Decimal(15, 2)
+  refType   String       // PAYROLL_RUN | MANUAL | SYSTEM
+  refId     String?      @db.Uuid
+  memo      String
+  actorId   String
+  at        DateTime     @default(now())
+  loan      EmployeeLoan @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  @@unique([loanId, refType, refId]) // one payroll deduction per run per loan — retries can never double-post
+  @@index([loanId, at])
+}
+
+model LoanPaymentSchedule {
+  id       String       @id @default(uuid()) @db.Uuid
+  loanId   String       @db.Uuid
+  seq      Int
+  amount   Decimal      @db.Decimal(15, 2)
+  paidAt   DateTime?
+  paidVia  String?
+  loan     EmployeeLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  @@unique([loanId, seq])
+}
+
+/* ================= recruitment ================= */
+model JobPosting {
+  id             String        @id @default(uuid()) @db.Uuid
+  slug           String        @unique
+  title          String
+  departmentId   String        @db.Uuid
+  positionTitle  String
+  salaryGrade    Int
+  employmentType String
+  workLocation   String
+  summary        String
+  responsibilities String[]
+  qualifications String[]
+  keywords       String[]
+  openings       Int           @default(1)
+  postedAt       DateTime      @default(now())
+  deadline       DateTime      @db.Date
+  status         JobStatus     @default(DRAFT)
+  department     Department    @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  applications   Application[]
+  @@index([status, deadline])
+}
+
+model ApplicantProfile {
+  id           String          @id @default(uuid()) @db.Uuid
+  fullName     String
+  email        String          @unique
+  phone        String?
+  applications Application[]
+  documents    ApplicantDocument[]
+  createdAt    DateTime        @default(now())
+}
+
+model Application {
+  id           String                     @id @default(uuid()) @db.Uuid
+  jobPostingId String                     @db.Uuid
+  applicantId  String                     @db.Uuid
+  status       CandidateStatus            @default(NEW)
+  matchScore   Int                        @default(0) // decision-support ONLY
+  coverLetter  String
+  resumePath   String?                    // private storage
+  resumeText   String?
+  appliedAt    DateTime                   @default(now())
+  job          JobPosting                 @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
+  applicant    ApplicantProfile           @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+  history      ApplicationStatusHistory[]
+  evaluations  CandidateEvaluation[]
+  tags         CandidateTag[]
+  interviews   Interview[]
+  @@unique([jobPostingId, applicantId])
+  @@index([status])
+}
+
+model ApplicantDocument {
+  id          String           @id @default(uuid()) @db.Uuid
+  applicantId String           @db.Uuid
+  kind        String           // RESUME | TRANSCRIPT | CERTIFICATION
+  storagePath String           // private bucket
+  fileName    String
+  uploadedAt  DateTime         @default(now())
+  applicant   ApplicantProfile @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+}
+
+model CandidateEvaluation {
+  id            String      @id @default(uuid()) @db.Uuid
+  applicationId String      @db.Uuid
+  authorId      String      @db.Uuid
+  rating        Int
+  note          String
+  at            DateTime    @default(now())
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+}
+
+model CandidateTag {
+  id            String      @id @default(uuid()) @db.Uuid
+  applicationId String      @db.Uuid
+  tag           String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  @@unique([applicationId, tag])
+}
+
+model ApplicationStatusHistory {
+  id            String          @id @default(uuid()) @db.Uuid
+  applicationId String          @db.Uuid
+  status        CandidateStatus
+  byId          String
+  note          String?
+  at            DateTime        @default(now())
+  application   Application     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+}
+
+model Interview {
+  id            String                  @id @default(uuid()) @db.Uuid
+  applicationId String                  @db.Uuid
+  scheduledAt   DateTime
+  mode          String                  // ONSITE | ONLINE
+  location      String?
+  note          String?
+  application   Application             @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  participants  InterviewParticipant[]
+}
+
+model InterviewParticipant {
+  id          String    @id @default(uuid()) @db.Uuid
+  interviewId String    @db.Uuid
+  userId      String    @db.Uuid
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  @@unique([interviewId, userId])
+}
+
+/* ================= supporting ================= */
+model Notification {
+  id         String           @id @default(uuid()) @db.Uuid
+  userId     String?          @db.Uuid
+  employeeId String?          @db.Uuid
+  type       NotificationType
+  title      String
+  body       String
+  read       Boolean          @default(false)
+  link       String?
+  createdAt  DateTime         @default(now())
+  employee   Employee?        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  @@index([userId, read, createdAt])
+}
+
+model EmailDelivery {
+  id        String    @id @default(uuid()) @db.Uuid
+  to        String
+  subject   String
+  status    String    @default("QUEUED") // QUEUED | SENT | FAILED
+  provider  String?
+  attempts  Int       @default(0)
+  lastError String?
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+}
+
+model ReportRun {
+  id           String        @id @default(uuid()) @db.Uuid
+  type         String
+  params       Json
+  paramsLabel  String
+  status       ReportStatus  @default(QUEUED)
+  progress     Int           @default(0)
+  requestedBy  String        @db.Uuid
+  fileId       String?       @unique @db.Uuid
+  file         GeneratedFile? @relation(fields: [fileId], references: [id])
+  createdAt    DateTime      @default(now())
+  completedAt  DateTime?
+}
+
+model GeneratedFile {
+  id          String       @id @default(uuid()) @db.Uuid
+  name        String
+  mime        String
+  storagePath String       // private Supabase Storage path
+  sizeBytes   Int
+  createdAt   DateTime     @default(now())
+  report      ReportRun?
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String
+  actorName  String
+  action     String
+  entity     String
+  entityId   String
+  before     Json?
+  after      Json?
+  requestId  String
+  at         DateTime @default(now())
+  @@index([entity, entityId, at])
+  @@index([actorId, at])
+  @@index([action, at])
+}
+
+model BackgroundJobRecord {
+  id        String   @id @default(uuid()) @db.Uuid
+  queue     String
+  name      String
+  jobId     String   @unique // BullMQ job id — idempotency across retries
+  status    String   @default("ACTIVE")
+  attempts  Int      @default(0)
+  lastError String?
+  meta      Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

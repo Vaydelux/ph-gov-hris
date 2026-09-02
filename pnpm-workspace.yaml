@@ -1,0 +1,10 @@
+# Government HRIS pnpm monorepo.
+#   apps/web      — presentation layer (this Vite build today; Next.js App Router
+#                   target — pages/components/state map 1:1, see docs)
+#   apps/api      — NestJS authoritative API (Supabase JWT + RBAC + Prisma)
+#   apps/worker   — BullMQ workers (payroll, payslips, PDF/Excel reports)
+#   packages/contracts         — pure types + computation engine (shared)
+#   packages/payroll-processing — shared run computation (API + worker)
+packages:
+  - "apps/*"
+  - "packages/*"
