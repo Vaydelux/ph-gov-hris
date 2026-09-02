@@ -171,13 +171,27 @@ const httpAdapter = {
 
 type Unwrap<T> = T extends (...args: never[]) => Promise<infer R> ? R : never;
 
-/* ================= mode selection ================= */
-const adapter: ApiAdapter = config.isPreview
-  ? preview
-  : ({
-      ...preview, // static re-exports (can, roleMatrix, …) carry over safely
-      ...httpAdapter,
-    } as ApiAdapter); // both adapters implement the identical contract
+/* ================= mode selection =================
+   PREVIEW  → the in-browser adapter is the implementation.
+   PRODUCTION → ONLY the HTTP adapter is reachable. Pure display helpers
+   (permission matrix, formatters) are allow-listed; any other preview export
+   throws instead of silently touching demo data — production never falls back. */
+const STATIC_ALLOWLIST = new Set(["can", "ROLES", "PERMISSIONS", "ROLE_PERMISSIONS", "roleMatrix", "toCents"]);
+const productionAdapter = new Proxy(httpAdapter as Record<string | symbol, unknown>, {
+  get(target, prop) {
+    if (prop in target) return target[prop];
+    if (typeof prop === "string" && STATIC_ALLOWLIST.has(prop)) return (preview as Record<string, unknown>)[prop];
+    if (typeof prop === "string") {
+      return () => {
+        throw new ApiError("NOT_AVAILABLE_IN_PRODUCTION",
+          `"${prop}" has no production API implementation. Production mode never falls back to preview fixtures.`);
+      };
+    }
+    return Reflect.get(target, prop);
+  },
+}) as unknown as ApiAdapter;
+
+const adapter: ApiAdapter = config.isPreview ? preview : productionAdapter;
 
 export default adapter;
 export { preview as previewAdapter, httpAdapter };

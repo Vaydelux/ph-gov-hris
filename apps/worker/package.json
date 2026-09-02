@@ -2,31 +2,29 @@
   "name": "@gov-hris/worker",
   "version": "1.0.0",
   "private": true,
-  "description": "Government HRIS background worker — BullMQ processors for payroll, payslips, PDF/Excel reports, and bulk email",
+  "description": "Government HRIS background workers (BullMQ on Upstash Redis): payroll computation, payslips, PDF/Excel reports, bulk email, biometric imports.",
   "scripts": {
-    "dev": "ts-node src/main.ts",
+    "start:dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js",
+    "start:prod": "node dist/main.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@gov-hris/contracts": "workspace:*",
     "@prisma/client": "^5.19.0",
-    "@sentry/node": "^8.26.0",
     "@supabase/supabase-js": "^2.45.0",
     "bullmq": "^5.12.0",
     "exceljs": "^4.4.0",
-    "nodemailer": "^6.9.14",
+    "ioredis": "^5.4.1",
     "puppeteer": "^23.2.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
-    "@types/nodemailer": "^6.4.15",
+    "@types/node": "^22.5.0",
     "prisma": "^5.19.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.7.0",
-    "vitest": "^2.1.0"
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
   }
 }

@@ -1,13 +1,15 @@
 {
   "compilerOptions": {
     "module": "commonjs",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "moduleResolution": "node",
     "declaration": false,
     "removeComments": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
-    "target": "ES2022",
     "sourceMap": true,
     "outDir": "./dist",
     "baseUrl": "./",
@@ -15,7 +17,9 @@
     "skipLibCheck": true,
     "strict": true,
     "strictNullChecks": true,
-    "forceConsistentCasingInFileNames": true
+    "noImplicitAny": true,
+    "forceConsistentCasingInFileNames": true,
+    "paths": { "@gov-hris/contracts": ["../../packages/contracts/src/index.ts"] }
   },
-  "include": ["src/**/*", "prisma/seed.ts"]
+  "include": ["src/**/*", "../../packages/contracts/src/**/*"]
 }

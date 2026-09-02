@@ -1,14 +1,15 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
     "module": "commonjs",
+    "target": "ES2022",
+    "lib": ["ES2022"],
     "moduleResolution": "node",
     "outDir": "./dist",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "sourceMap": true,
-    "forceConsistentCasingInFileNames": true
+    "paths": { "@gov-hris/contracts": ["../../packages/contracts/src/index.ts"] }
   },
-  "include": ["src"]
+  "include": ["src/**/*", "../../packages/contracts/src/**/*"]
 }

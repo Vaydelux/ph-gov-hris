@@ -1,36 +1,29 @@
-import { BullModule } from "@nestjs/bullmq";
-import { Module } from "@nestjs/common";
-import { APP_FILTER } from "@nestjs/core";
-import { AuthModule } from "./auth/auth.module";
-import { AllExceptionsFilter } from "./common";
-import { config } from "./config";
-import { HrModule } from "./hr/hr.module";
-import { MoneyModule } from "./money/money.module";
-import { PayrollModule } from "./payroll/payroll.module";
-import { TalentModule } from "./talent/talent.module";
+import { MiddlewareConsumer, Module, type NestModule } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+import { PermissionsGuard, SupabaseAuthGuard } from "./auth";
+import { CorrelationMiddleware, PrismaService } from "./platform";
+import { PayrollController, PayrollService } from "./payroll";
+import { ReportsController } from "./reports";
+import { HealthController } from "./health";
 
-const redis = () => {
-  const url = (config as { REDIS_URL?: string }).REDIS_URL;
-  if (!url) return { connection: { host: "127.0.0.1", port: 6379 } };
-  const u = new URL(url);
-  return {
-    connection: {
-      host: u.hostname, port: Number(u.port || 6379), password: u.password || undefined,
-      tls: u.protocol === "rediss:" ? {} : undefined,
-    },
-  };
-};
-
+/**
+ * Global guards: every route requires a verified Supabase JWT, then capability
+ * checks declared with @RequirePermissions(...). Supabase RLS is deliberately
+ * NOT the authorization system — this guard + PostgreSQL-resolved permissions
+ * are authoritative (per architecture decision).
+ */
 @Module({
-  imports: [
-    BullModule.forRootAsync({ useFactory: redis }),
-    BullModule.registerQueue({ name: "payroll" }, { name: "reports" }, { name: "email" }, { name: "biometrics" }),
-    AuthModule,
-    HrModule,
-    PayrollModule,
-    MoneyModule,
-    TalentModule,
+  controllers: [HealthController, PayrollController, ReportsController],
+  providers: [
+    PrismaService,
+    PayrollService,
+    { provide: APP_GUARD, useClass: SupabaseAuthGuard },
+    { provide: APP_GUARD, useClass: PermissionsGuard },
   ],
-  providers: [{ provide: APP_FILTER, useClass: AllExceptionsFilter }],
+  exports: [PrismaService],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(CorrelationMiddleware).forRoutes("*");
+  }
+}
