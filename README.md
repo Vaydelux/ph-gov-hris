@@ -93,6 +93,19 @@ Health probe: `GET <API_URL>/health` (web diagnostics panel pings it).
 Supabase project (DATABASE_URL/DIRECT_URL, SUPABASE_URL, anon + service-role keys, JWKS URL) ·
 Upstash REDIS_URL · optional SENTRY_DSN · mail provider for real email dispatch.
 
+## Troubleshooting
+
+- **`destroy is not a function` (or any odd React commit error) on startup/login:**
+  this is the signature of a stale dependency cache — React and its peers are
+  pinned (`react@18.2.0`, `react-router-dom@6.8.0`) and every effect in the tree
+  has been audited to return only `undefined` or a cleanup function. Clear the
+  Vite pre-bundle cache and reinstall:
+  ```bash
+  rm -rf node_modules/.vite && npm install && npm run dev
+  ```
+  If anything ever surfaces again, the error screen now renders the full
+  component stack — include it in the report.
+
 ## Honest status of this workspace
 
 This sandbox builds and serves **the web app only** (`npm run build` → `vite build`,

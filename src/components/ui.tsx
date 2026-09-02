@@ -120,7 +120,7 @@ export function SealMark({ size = 56 }: { size?: number }) {
       </g>
       <path d="M22 68 L34 48 L42 58 L52 42 L74 68 Z" fill="#2170e4" opacity=".9" />
       <path d="M30 68 L40 54 L46 61 L54 50 L66 68 Z" fill="#0058be" />
-      <path d="M48 12 l2.2 4.6 5 .7 -3.6 3.5 .9 5 -4.5-2.4 -4.5 2.4 .9-5 -3.6-3.5 5-.7 Z" fill="#e8d07a" transform="translate(0,-2) scale(.85)" transformOrigin="48 16" />
+      <path d="M48 12 l2.2 4.6 5 .7 -3.6 3.5 .9 5 -4.5-2.4 -4.5 2.4 .9-5 -3.6-3.5 5-.7 Z" fill="#e8d07a" transform="translate(48 16) scale(.85) translate(-48 -16) translate(0 -2)" />
     </svg>
   );
 }

@@ -74,20 +74,33 @@ function NotFoundPage() {
     </div>
   );
 }
-class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  state = { error: null as Error | null };
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null; stack: string | null }> {
+  state = { error: null as Error | null, stack: null as string | null };
   static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: { componentStack?: string | null }) {
+    // componentStack names the exact subtree that threw — include it in any support report.
+    console.error("[gov-hris] render error:", error, info.componentStack ?? "");
+    this.setState({ stack: info.componentStack ?? null });
+  }
   render() {
     if (this.state.error) {
+      const recover = (to: string) => { this.setState({ error: null, stack: null }); window.location.hash = to; window.location.reload(); };
       return (
         <div className="app-bg flex min-h-screen items-center justify-center p-6">
           <div className="w-full max-w-lg rounded-xl border border-red-200 bg-white p-8 shadow-lift">
             <div className="mb-2 flex items-center gap-2 text-red-600"><ShieldIcon /><h1 className="font-display text-xl font-extrabold text-navy-900">Something went wrong</h1></div>
             <p className="text-sm text-ink-500">The interface hit an unexpected error. Your data is safe — reload to continue, or report this to HRIS support with the details below.</p>
-            <pre className="mt-4 max-h-40 overflow-auto rounded-md bg-ink-900 p-3 text-[11px] leading-relaxed text-red-200">{this.state.error.message}</pre>
-            <div className="mt-4 flex gap-2">
-              <Button onClick={() => { this.setState({ error: null }); window.location.hash = "#/dashboard"; window.location.reload(); }}>Reload application</Button>
-              <Button variant="outline" onClick={() => this.setState({ error: null })}>Try to continue</Button>
+            <pre className="mt-4 max-h-24 overflow-auto rounded-md bg-ink-900 p-3 text-[11px] leading-relaxed text-red-200">{this.state.error.message}</pre>
+            {this.state.stack && (
+              <details className="mt-2 rounded-md border border-ink-200 bg-ink-50/60 px-3 py-2 text-[11px] text-ink-500">
+                <summary className="cursor-pointer font-bold text-ink-700">Component stack (for support)</summary>
+                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{this.state.stack}</pre>
+              </details>
+            )}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button onClick={() => recover("#/dashboard")}>Reload application</Button>
+              <Button variant="outline" onClick={() => recover("#/login")}>Return to sign in</Button>
+              <Button variant="ghost" onClick={() => this.setState({ error: null, stack: null })}>Try to continue</Button>
             </div>
           </div>
         </div>

@@ -38,7 +38,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /* re-render consumers when the data store changes (preview adapter bus) */
   useEffect(() => {
     if (!config.isPreview) return;
-    import("../server/db").then(({ subscribe }) => subscribe(() => setVersion((v) => v + 1)));
+    let live = true;
+    let unsubscribe: (() => void) | undefined;
+    import("../server/db").then(({ subscribe }) => {
+      if (live) unsubscribe = subscribe(() => setVersion((v) => v + 1));
+    });
+    return () => { live = false; unsubscribe?.(); };
   }, []);
 
   const value = useMemo(() => ({ user, setUser, toasts, toast, dismissToast, version }), [user, toasts, toast, dismissToast, version]);
