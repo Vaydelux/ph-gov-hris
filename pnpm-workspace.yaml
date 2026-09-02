@@ -1,0 +1,5 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+# Root (Vite) project uses npm for the preview web app; the production
+# monorepo apps use pnpm. See README "Commands".

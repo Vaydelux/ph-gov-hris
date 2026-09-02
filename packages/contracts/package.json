@@ -1,0 +1,20 @@
+{
+  "name": "@gov-hris/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Neutral shared contracts + pure domain engine for Government HRIS. No NestJS, no Prisma, no React.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}
